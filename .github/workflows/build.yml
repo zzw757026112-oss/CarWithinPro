@@ -1,0 +1,129 @@
+# Build the patched CarWithin (iOS 16.4.1 session fixes) on a GitHub-hosted
+# macOS runner and produce an unsigned IPA. No Mac, no signing identity,
+# no certificates and no secrets are needed.
+#
+# Patches (vs upstream 1.0.3):
+#  - App/SameDeviceProbe.swift: 0x4300 early return also sets requested = true
+#    (fixes issue #6: 20s session timeout on iOS 16.4.1 when the control
+#    connection arrives before the 0x4300 notification).
+#  - App/CarPlayMediaSession.swift: acceptEvent replaces the old event
+#    connection instead of rejecting the new one (fixes issue #11: event
+#    channel never establishes on iOS 16 reconnect).
+#
+# The MFi identity (certificate.p7b / leaf.cer / private.x963) is stored as
+# base64 text in Identity/ and decoded into App/BundledIdentity/ before the
+# project is generated. It is the same identity already bundled in the
+# public 1.0.3 release IPA.
+#
+# Trigger: on every push, or manually from the Actions tab
+# (workflow_dispatch). The built IPA is uploaded as a workflow artifact;
+# download it from the completed run and install it with TrollStore.
+name: Build CarWithin (patched, unsigned IPA)
+
+on:
+  push:
+    paths:
+      - 'App/**'
+      - 'Sources/**'
+      - 'Identity/**'
+      - 'Tools/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build unsigned IPA
+    runs-on: macos-15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Decode MFi identity into App/BundledIdentity
+        run: |
+          set -euo pipefail
+          mkdir -p App/BundledIdentity
+          base64 -d -i Identity/certificate.p7b.b64 -o App/BundledIdentity/certificate.p7b
+          base64 -d -i Identity/leaf.cer.b64 -o App/BundledIdentity/leaf.cer
+          base64 -d -i Identity/private.x963.b64 -o App/BundledIdentity/private.x963
+          ls -l App/BundledIdentity/
+
+      # Xcode 16.x targets iOS 16.0 and ships Swift 6.0. Do NOT use
+      # Xcode 26 here: newer SDKs link symbols iOS 16.4.1 does not
+      # provide (that is exactly what killed the original Ninebot 1.0.1).
+      - name: Select Xcode 16.x
+        run: |
+          ls /Applications | grep -i xcode || true
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          else
+            for d in $(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -r); do
+              sudo xcode-select -s "$d/Contents/Developer" && break
+            done
+          fi
+          xcodebuild -version
+          swift --version
+
+      # Regenerates TDSCarKit.xcodeproj and adds App/BundledIdentity/*
+      # as bundle resources. Needs only macOS plutil.
+      - name: Generate Xcode project
+        run: python3 Tools/generate_project.py
+
+      - name: Archive (Release, no signing)
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project "TDSCarKit.xcodeproj" \
+            -scheme "TDSCarKit" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "build/TDSCarKit.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build.log
+
+      # If the build fails, surface the actual error lines as job
+      # annotations: they are visible on the public run page without
+      # signing in, so the log does not have to be fetched by hand.
+      - name: Show build errors as annotations
+        if: failure()
+        run: |
+          grep -E "error:" build.log | head -40 | while IFS= read -r line; do echo "::error::$line"; done
+          echo "---- tail of build.log ----"
+          tail -30 build.log
+
+      - name: Verify the built app
+        run: |
+          APP="build/TDSCarKit.xcarchive/Products/Applications/TDSCarKit.app"
+          test -d "$APP" || { echo "Built app not found at $APP"; exit 1; }
+          MIN_OS=$(/usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "$APP/Info.plist")
+          test "$MIN_OS" = "16.0" || { echo "MinimumOSVersion is $MIN_OS, expected 16.0"; exit 1; }
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist"
+          test -f "$APP/certificate.p7b" || { echo "certificate.p7b missing from app bundle"; exit 1; }
+          test -f "$APP/leaf.cer" || { echo "leaf.cer missing from app bundle"; exit 1; }
+          test -f "$APP/private.x963" || { echo "private.x963 missing from app bundle"; exit 1; }
+          echo "MFi identity present in app bundle"
+
+      - name: Package unsigned IPA
+        run: |
+          APP="build/TDSCarKit.xcarchive/Products/Applications/TDSCarKit.app"
+          VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          IPA="CarWithin-${VER}-patched-ios16-unsigned.ipa"
+          rm -rf Payload "$IPA"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -r -y "$IPA" Payload
+          rm -rf Payload
+          ls -lh "$IPA"
+          shasum -a 256 "$IPA" | tee SHA256SUMS.txt
+          unzip -l "$IPA"
+          echo "IPA_NAME=$IPA" >> "$GITHUB_ENV"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IPA_NAME }}-ipa
+          path: |
+            ${{ env.IPA_NAME }}
+            SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
