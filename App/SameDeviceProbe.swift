@@ -135,7 +135,11 @@ final class SameDeviceProbe {
                     onLog?("CarPlay 可用传输 \(group.id)：\(value)")
                 }
             }
-            if controlConnected || (!expectsLocalControl && requested) { return }
+            // 补丁：iOS 16.4.1 上控制连接先到（pair-verify 已通过），0x4300 到达时
+            // controlConnected 已是 true，直接 return 会漏掉 requested=true，
+            // 20 秒定时器就把全通的会话杀掉（issue #6）。已连上就不用再请求，
+            // 但要把 requested 置 true，告诉定时器会话已启动。
+            if controlConnected || (!expectsLocalControl && requested) { requested = true; return }
             try requestSession(configuration)
             if !requested && expectsLocalControl {
                 let run = generation

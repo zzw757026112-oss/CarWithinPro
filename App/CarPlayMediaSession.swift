@@ -109,7 +109,12 @@ final class CarPlayMediaSession {
         return try PropertyListSerialization.data(fromPropertyList: response, format: .binary, options: 0)
     }
     private func acceptEvent(_ connection: MediaTCPConnection) {
-        guard event == nil else { connection.stop(); return }
+        // 补丁：iOS 16 上事件通道会“先连、断、再连”，第二次连接到达时槽位里还是
+        // 旧连接，直接拒掉新连接、等旧连接的 onClose 清槽位，槽位就空了，
+        // hasEventChannel 恒 false，关键帧请求永远不发（issue #11）。
+        // 改成顶替旧连接——stop() 不会触发 onClose（读回调里有 stopped 守卫），
+        // 事件回调都在同一串行队列上，不会把新连接顶掉。
+        if let old = event { old.stop() }
         event = connection
         eventCipher = ControlCipher(readKey: PairVerify.derive(secret, salt: "Events-Salt", info: "Events-Read-Encryption-Key"),
             writeKey: PairVerify.derive(secret, salt: "Events-Salt", info: "Events-Write-Encryption-Key"))
