@@ -169,13 +169,13 @@ enum AccessoryIdentityStore {
 
         var errorDescription: String? {
             switch self {
-            case .documentsUnavailable: return "App 的 Documents 目录不可用"
-            case .identityMissing: return "Keychain 中未存储 MFi 身份"
-            case .invalidStagingFile(let name): return "身份导入文件缺失或无效：\(name)"
-            case .invalidPrivateKey: return "导入的 P-256 私钥无效"
-            case .invalidStoredIdentity: return "已存储的 MFi 身份无效"
+            case .documentsUnavailable: return CWL("App 的 Documents 目录不可用")
+            case .identityMissing: return CWL("Keychain 中未存储 MFi 身份")
+            case .invalidStagingFile(let name): return CWL("身份导入文件缺失或无效：{1}", [String(describing: name)])
+            case .invalidPrivateKey: return CWL("导入的 P-256 私钥无效")
+            case .invalidStoredIdentity: return CWL("已存储的 MFi 身份无效")
             case .keychain(let status):
-                return (SecCopyErrorMessageString(status, nil) as String?) ?? "Keychain 错误 \(status)"
+                return (SecCopyErrorMessageString(status, nil) as String?) ?? CWL("Keychain 错误 {1}", [String(describing: status)])
             }
         }
     }

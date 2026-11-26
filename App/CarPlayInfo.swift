@@ -17,7 +17,11 @@ enum CarPlayInfo {
     private static let displayFeatureHighFidelityTouch = 0x08
     static let defaultWidthPhysicalMM = 200
 
-    static func features(audio: Bool) -> UInt64 { audio ? 0x615653aee2 : 0x615653aee2 & ~UInt64(0x10004540a00) }
+    // 补丁（authbit）：音频关时也保留 features 第 26 位（0x4000000）。
+    // 旧掩码 0x10004540a00 会把第 26 位一起清掉，iOS 16 读到缺这一位就不继续
+    // 走 CarPlay 会话（表现为连不上 / 黑屏等关键帧）。0x615603a4e2 = 音频开的
+    // 0x615653aee2 只清第 9、11、20、22 位，第 26 位留着。
+    static func features(audio: Bool) -> UInt64 { audio ? 0x615653aee2 : 0x615603a4e2 }
 
     /// 30–60 in steps of 5 (round half up), as the iPhone expects for maxFPS.
     static func sanitizedFPS(_ fps: Int) -> Int {
@@ -44,10 +48,10 @@ enum CarPlayInfo {
         let modes: [String: Any] = ["resources": resources, "appStates": [
             ["appStateID": 2, "state": false], ["appStateID": 1, "speechMode": -1], ["appStateID": 3, "state": false]]]
         let hidDevices = [
-            hidDevice(HID.touch, name: "CarWithin 触控屏", descriptor: touchDescriptor(width: config.width, height: config.height)),
-            hidDevice(HID.knob, name: "CarWithin 旋钮", descriptor: knobDescriptor),
-            hidDevice(HID.media, name: "CarWithin 多媒体键", descriptor: mediaDescriptor),
-            hidDevice(HID.telephony, name: "CarWithin 电话键", descriptor: telephonyDescriptor)
+            hidDevice(HID.touch, name: CWL("CarWithin 触控屏"), descriptor: touchDescriptor(width: config.width, height: config.height)),
+            hidDevice(HID.knob, name: CWL("CarWithin 旋钮"), descriptor: knobDescriptor),
+            hidDevice(HID.media, name: CWL("CarWithin 多媒体键"), descriptor: mediaDescriptor),
+            hidDevice(HID.telephony, name: CWL("CarWithin 电话键"), descriptor: telephonyDescriptor)
         ]
         var info: [String: Any] = ["sourceVersion": "509.11", "features": NSNumber(value: features(audio: config.audioEnabled)), "statusFlags": 4,
             "model": "CarWithin1,1", "manufacturer": "CarWithin", "deviceID": config.deviceID,
